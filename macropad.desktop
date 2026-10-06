@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Macropad
+Comment=Rebind the keys and wheel of your macro keypad
+Exec=@DIR@/macropad-settings
+Icon=input-keyboard
+Categories=Settings;HardwareSettings;
+Keywords=macro;keypad;shortcut;keyboard;
+StartupWMClass=io.github.dino.Macropad

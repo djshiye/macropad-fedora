@@ -1,0 +1,5 @@
+# Give the logged-in user access to the SDINNOVATION SIDE-KEYBOARD macro pad
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="0816", ATTRS{idProduct}=="246f", TAG+="uaccess"
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+# Vendor config channel (hidraw) for reading/writing the pad's on-board keymap
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0816", ATTRS{idProduct}=="246f", TAG+="uaccess"
