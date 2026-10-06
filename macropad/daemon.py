@@ -200,9 +200,12 @@ class Daemon:
         folder = os.path.expanduser(action.get("dir") or "~")
         if not os.path.isdir(folder):
             raise ValueError(f"folder not found: {folder}")
-        argv = [self.cfg.get("terminal") or "ptyxis", "--new-window", "-d", folder]
+        argv = [self.cfg.get("terminal") or "ptyxis", "-d", folder]
         cmd = action.get("command", "").strip()
-        if cmd:
+        if not cmd:
+            argv.append("--new-window")
+        else:
+            # "-- cmd" already opens its own window; adding --new-window opens a second, blank one.
             # Interactive shell so ~/.bashrc puts things like ~/.local/bin on PATH.
             shell = os.environ.get("SHELL") or "/bin/bash"
             argv += ["--", shell, "-ic", f"{cmd}; exec {shell}" if action.get("keep_open", True) else cmd]
