@@ -14,7 +14,7 @@ the action you assigned instead. The **Macropad** app (in the app grid) edits th
 | Launch app | picked from installed apps |
 | Open URL / file | `https://…`, `~/Documents/notes.md` |
 | Open terminal | new Ptyxis window in a folder, optionally running a command (e.g. `~/Coding/macropad` + `claude`) |
-| Chain of steps | several of the above in order, with **Wait** steps in between (Add step / ↑ ↓ / remove) |
+| Chain of steps | several of the above in order, with **Wait** steps in between; any action's **Add another step** turns it into a chain |
 | Switch layer | next / previous / a specific layer |
 | Original key | send what the pad sends natively (wheel = volume) |
 
@@ -27,7 +27,7 @@ on-screen layout matches the pad. Each on-screen key keeps its action.
 
 ## Storing on the pad itself
 For a key whose action is a **keyboard shortcut** (single combo, e.g. `ctrl+shift+t`) or media key, the
-editor's “Stored on the pad” section can write it into the pad's own memory, so it works on any computer.
+editor's “Pad hardware” row can write it into the pad's own memory, so it works on any computer.
 Writes go through `macropad/board.py`, which only allows read commands plus the single-key write
 (command 16) and verifies every write by reading it back. Firmware-update (0x55/0x5A) and
 factory-reset (15/255) commands are refused. “Factory default” restores one key from the pad's own
@@ -41,12 +41,24 @@ factory table. Protocol: https://github.com/parsaj-dev/sdcx-keypad (docs/PROTOCO
 
 ## Files
 - `~/.config/macropad/config.json` — config (edited by the app; hand edits are picked up within 2 s)
-- `macropad/daemon.py` — grabber/remapper (`systemctl --user status macropad`, `journalctl --user -u macropad -f`)
-- `macropad/gui.py` — settings app; talks to the daemon over `$XDG_RUNTIME_DIR/macropad.sock`
-- `70-macropad.rules` — udev rule giving the logged-in user access to the pad
+- `macropad/daemon.py` — grabber/remapper, installed as `/usr/libexec/macropad-daemon` and run by the
+  per-user service `macropad.service` (`systemctl --user status macropad`, `journalctl --user -u macropad -f`)
+- `macropad/gui.py` — settings app (`macropad-settings`); talks to the daemon over `$XDG_RUNTIME_DIR/macropad.sock`
+- `build-aux/` — RPM spec, user service, udev rule (gives the logged-in user access to the pad), desktop file, icon
 
 ## Install
-`./install.sh` (asks for admin password once for the udev rule; enables the user service and app launcher).
+Every push to `main` builds an RPM in GitHub Actions and publishes it as a DNF repository on GitHub Pages:
+
+```sh
+sudo dnf config-manager addrepo --from-repofile=https://djshiye.github.io/macropad-fedora/macropad.repo
+sudo dnf install macropad
+```
+
+`dnf upgrade` keeps it current, and upgrades restart the running service. The service runs per user (it
+needs your session to press keys, open apps and show notifications) and is enabled for every user.
+
+To try changes from a checkout without packaging: `systemctl --user stop macropad`, then run
+`./macropad-daemon` and `./macropad-settings` from the repository.
 
 ## Notes
 - Terminal commands run in an interactive shell (`$SHELL -ic`) so `~/.bashrc` PATH entries apply.

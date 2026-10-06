@@ -1,0 +1,7 @@
+[macropad]
+name=Macropad
+baseurl=https://djshiye.github.io/macropad-fedora/fedora-$releasever/
+enabled=1
+# The packages are built by GitHub Actions and are not signed.
+gpgcheck=0
+metadata_expire=1h

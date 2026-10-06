@@ -17,7 +17,7 @@ from . import config as C  # noqa: E402
 from . import board  # noqa: E402
 from . import keys  # noqa: E402
 
-APP_ID = "io.github.dino.Macropad"
+APP_ID = "io.github.djshiye.Macropad"
 KEY_IDS = ["k1", "k2", "k3", "k4", "k5", "k6"]
 POSITIONS = [("k1", "the TOP-LEFT key"), ("k2", "the TOP-MIDDLE key"), ("k3", "the TOP-RIGHT key"),
              ("k4", "the BOTTOM-LEFT key"), ("k5", "the BOTTOM-MIDDLE key"), ("k6", "the BOTTOM-RIGHT key"),
@@ -1082,7 +1082,7 @@ class Window(Adw.ApplicationWindow):
         r = subprocess.run(["systemctl", "--user", "start", "macropad.service"],
                            capture_output=True, text=True)
         if r.returncode:
-            self.toast("Couldn't start the service. Run install.sh first")
+            self.toast("Couldn’t start the service. Is the macropad package installed?")
 
     def toast(self, text):
         self.toasts.add_toast(Adw.Toast(title=text, timeout=3))

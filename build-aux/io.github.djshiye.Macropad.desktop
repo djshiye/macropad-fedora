@@ -2,8 +2,10 @@
 Type=Application
 Name=Macropad
 Comment=Rebind the keys and wheel of your macro keypad
-Exec=@DIR@/macropad-settings
-Icon=input-keyboard
+Exec=macropad-settings
+Icon=io.github.djshiye.Macropad
+Terminal=false
 Categories=Settings;HardwareSettings;
 Keywords=macro;keypad;shortcut;keyboard;
-StartupWMClass=io.github.dino.Macropad
+StartupNotify=true
+StartupWMClass=io.github.djshiye.Macropad

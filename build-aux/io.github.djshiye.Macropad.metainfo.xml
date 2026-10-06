@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.djshiye.Macropad</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Macropad</name>
+  <summary>Rebind the keys and wheel of your macro keypad</summary>
+  <description>
+    <p>
+      Macropad remaps the six keys and scroll wheel of the SDINNOVATION SIDE-KEYBOARD
+      on GNOME. Keys can press shortcuts, type text, run commands, launch apps, open a
+      terminal in a folder, switch layers, or run a chain of these steps.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.djshiye.Macropad.desktop</launchable>
+  <url type="homepage">https://github.com/djshiye/macropad-fedora</url>
+  <developer id="io.github.djshiye"><name>djshiye</name></developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-10-06"/>
+  </releases>
+</component>

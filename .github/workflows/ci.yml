@@ -1,0 +1,86 @@
+name: Macropad CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fedora:
+    name: Build RPM (Fedora 44)
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:44
+    steps:
+      # git first: without it checkout downloads a tarball and the commit
+      # count used for the RPM release number is unavailable.
+      - name: Install git
+        run: dnf install -y git
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y rpm-build rpmdevtools rpmlint python3-devel python3-gobject \
+            python3-evdev gtk4 libadwaita desktop-file-utils appstream systemd-rpm-macros tar
+
+      - name: Syntax check
+        run: python3 -m compileall -q macropad
+
+      - name: Build RPM
+        run: |
+          VERSION=$(sed -n 's/^Version: *//p' build-aux/macropad.spec)
+          git config --global --add safe.directory "$PWD"
+          BUILD=$(git rev-list --count HEAD)
+          rpmdev-setuptree
+          git archive --format=tar.gz --prefix="macropad-${VERSION}/" \
+            -o ~/rpmbuild/SOURCES/macropad-${VERSION}.tar.gz HEAD
+          rpmbuild -ba --define "release_suffix .$BUILD" build-aux/macropad.spec
+          rpmlint build-aux/macropad.spec ~/rpmbuild/RPMS/noarch/macropad-*.rpm || true
+
+      - name: Upload RPM
+        uses: actions/upload-artifact@v4
+        with:
+          name: macropad-rpm-fedora-44
+          path: ~/rpmbuild/RPMS/noarch/macropad-*.rpm
+          if-no-files-found: error
+
+  # Every push to main publishes a DNF repository on GitHub Pages:
+  # https://djshiye.github.io/macropad-fedora/macropad.repo
+  repo:
+    name: Publish DNF repository
+    needs: fedora
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:44
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: macropad-rpm-fedora-44
+          path: site/fedora-44
+      - name: Build repository metadata
+        run: |
+          dnf install -y createrepo_c
+          createrepo_c site/fedora-44
+          cp build-aux/macropad.repo site/
+          printf '<!doctype html><title>Macropad DNF repository</title><pre>sudo dnf config-manager addrepo --from-repofile=https://djshiye.github.io/macropad-fedora/macropad.repo\nsudo dnf install macropad</pre><p>Built from commit %s.</p>' "${GITHUB_SHA}" > site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
