@@ -11,7 +11,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from . import config as C  # noqa: E402
 from . import board  # noqa: E402
@@ -34,19 +34,30 @@ TYPE_ICONS = {
     "sequence": "view-list-ordered-symbolic", "wait": "preferences-system-time-symbolic",
 }
 CSS = """
-.padkey { min-width: 130px; min-height: 100px; border-radius: 14px; padding: 8px; }
-.padkey.selected { box-shadow: inset 0 0 0 3px @accent_color; }
-.padkey.flash { background-color: alpha(@accent_bg_color, 0.55); }
-.padkey .keyname { font-size: 0.8em; opacity: 0.6; }
-.padkey .action { font-weight: bold; }
-.padkey .inherited { opacity: 0.55; font-style: italic; }
-.knob { min-width: 70px; min-height: 70px; border-radius: 999px; padding: 4px; }
-.knob.selected { box-shadow: inset 0 0 0 3px @accent_color; }
-.knob.flash { background-color: alpha(@accent_bg_color, 0.55); }
+/* The pad replica is the one element with its own look: a device body with keycaps. */
+.padframe { border-radius: 24px; padding: 18px;
+            background-color: alpha(@window_fg_color, 0.07);
+            box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.07); }
+.padkey, .knob { background-color: @card_bg_color; color: @card_fg_color;
+                 box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.06),
+                             0 2px 0 alpha(black, 0.22), 0 3px 6px alpha(black, 0.10);
+                 transition: transform 120ms ease-out, box-shadow 120ms ease-out, background-color 180ms; }
+.padkey:hover, .knob:hover { background-color: mix(@card_bg_color, @window_fg_color, 0.05); }
+.padkey:active, .knob:active { transform: translateY(1px);
+                               box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.06), 0 1px 0 alpha(black, 0.22); }
+.padkey { border-radius: 14px; padding: 8px 6px; }
+.knob { border-radius: 999px; padding: 4px; }
+.padkey.selected, .knob.selected { box-shadow: inset 0 0 0 2px @accent_color, 0 2px 0 alpha(black, 0.22); }
+.padkey.flash, .knob.flash { background-color: alpha(@accent_bg_color, 0.45); }
+.padkey .from-base { color: @accent_color; }
 .minikey { min-width: 54px; min-height: 40px; border-radius: 8px; }
 .minikey.current { background-color: @accent_bg_color; color: @accent_fg_color; }
 .minikey.done { opacity: 0.45; }
-.padframe { border-radius: 20px; padding: 18px; background-color: alpha(@card_fg_color, 0.04); }
+.hero-icon { min-width: 56px; min-height: 56px; padding: 0; border-radius: 16px;
+             background-color: alpha(@accent_bg_color, 0.16); color: @accent_color; }
+.stepnum { min-width: 26px; min-height: 26px; border-radius: 999px; font-weight: bold;
+           background-color: alpha(@accent_bg_color, 0.16); color: @accent_color; }
+.active-badge { color: @success_color; }
 """
 
 
@@ -111,12 +122,22 @@ class Window(Adw.ApplicationWindow):
         self.pad_buttons = {}
         self.store_row = None
         self.open_step = None  # index of the expanded step in a chain editor
+        self.hardware_open = False
+        self.set_size_request(360, 480)
+        for name, cb in [("rename-layer", self.on_rename_layer), ("delete-layer", self.on_delete_layer),
+                         ("identify-keys", self.identify_keys)]:
+            act = Gio.SimpleAction(name=name)
+            act.connect("activate", cb)
+            self.add_action(act)
 
         self.toasts = Adw.ToastOverlay()
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
         self.title = Adw.WindowTitle(title="Macropad", subtitle="Connecting…")
         header.set_title_widget(self.title)
+        self.sidebar_btn = Gtk.ToggleButton(icon_name="sidebar-show-symbolic", visible=False,
+                                            tooltip_text="Show the pad")
+        header.pack_start(self.sidebar_btn)
         ident = Gtk.Button(label="Identify keys", tooltip_text="Tell the app which physical key is which")
         ident.connect("clicked", self.identify_keys)
         header.pack_start(ident)
@@ -127,12 +148,19 @@ class Window(Adw.ApplicationWindow):
         self.banner.connect("button-clicked", self.on_start_service)
         toolbar.add_top_bar(self.banner)
 
-        body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24,
-                       margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
-        body.append(self.build_left())
+        self.split = Adw.OverlaySplitView(min_sidebar_width=500, max_sidebar_width=560,
+                                          sidebar_width_fraction=0.5)
+        self.split.set_sidebar(self.build_left())
         self.editor_scroller = Gtk.ScrolledWindow(hexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
-        body.append(self.editor_scroller)
-        toolbar.set_content(body)
+        self.split.set_content(self.editor_scroller)
+        self.split.bind_property("show-sidebar", self.sidebar_btn, "active",
+                                 GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
+        self.split.bind_property("collapsed", self.sidebar_btn, "visible", GObject.BindingFlags.SYNC_CREATE)
+        bp = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 900sp"))
+        bp.add_setter(self.split, "collapsed", True)
+        bp.connect("unapply", lambda *_: self.split.set_show_sidebar(True))  # never strand the pad off-screen
+        self.add_breakpoint(bp)
+        toolbar.set_content(self.split)
         self.toasts.set_child(toolbar)
         self.set_content(self.toasts)
 
@@ -143,37 +171,49 @@ class Window(Adw.ApplicationWindow):
 
     # ---------- left side: layers + pad ----------
     def build_left(self):
-        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin_top=18,
+                       margin_bottom=18, margin_start=18, margin_end=18)
 
         lbar = Gtk.Box(spacing=6)
-        lbar.append(Gtk.Label(label="Layer", css_classes=["heading"]))
         self.layer_model = Gtk.StringList()
-        self.layer_dd = Gtk.DropDown(model=self.layer_model, hexpand=True)
+        self.layer_dd = Gtk.DropDown(model=self.layer_model, hexpand=True,
+                                     tooltip_text="Layer shown and edited below")
         self.layer_dd.connect("notify::selected", self.on_layer_selected)
         lbar.append(self.layer_dd)
-        for icon, tip, cb in [("list-add-symbolic", "Add layer", self.on_add_layer),
-                              ("document-edit-symbolic", "Rename layer", self.on_rename_layer),
-                              ("user-trash-symbolic", "Delete layer", self.on_delete_layer)]:
-            b = Gtk.Button(icon_name=icon, tooltip_text=tip, css_classes=["flat"])
-            b.connect("clicked", cb)
-            lbar.append(b)
+        add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="Add layer", css_classes=["flat"])
+        add.connect("clicked", self.on_add_layer)
+        lbar.append(add)
+        menu = Gio.Menu()
+        menu.append("Rename layer…", "win.rename-layer")
+        menu.append("Delete layer…", "win.delete-layer")
+        lbar.append(Gtk.MenuButton(icon_name="view-more-symbolic", menu_model=menu,
+                                   tooltip_text="More layer options", css_classes=["flat"]))
         left.append(lbar)
 
-        self.activate_btn = Gtk.Button(label="Make this the active layer", css_classes=["pill"])
+        # Either "Active on the pad" or a button to make it so; never a disabled button.
+        self.active_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, hhomogeneous=False,
+                                      halign=Gtk.Align.START)
+        badge = Gtk.Box(spacing=6, css_classes=["active-badge"], margin_start=4)
+        badge.append(Gtk.Image(icon_name="object-select-symbolic"))
+        badge.append(Gtk.Label(label="Active on the pad", css_classes=["caption-heading"]))
+        self.active_stack.add_named(badge, "active")
+        self.activate_btn = Gtk.Button(label="Make active", css_classes=["pill", "small"])
         self.activate_btn.connect("clicked", lambda *_: ipc_async(
             {"cmd": "set_layer", "layer": self.layer_idx}, lambda r: None))
-        left.append(self.activate_btn)
+        self.active_stack.add_named(self.activate_btn, "inactive")
+        self.active_stack.add_named(Gtk.Label(label="Service not running", css_classes=["caption", "dim-label"],
+                                              margin_start=4), "offline")
+        left.append(self.active_stack)
 
         frame = Gtk.Box(spacing=18, css_classes=["padframe"], halign=Gtk.Align.CENTER)
         grid = Gtk.Grid(row_spacing=10, column_spacing=10)
         for i, cid in enumerate(KEY_IDS):
-            btn = self.make_pad_button(cid, ["padkey", "card"])
+            btn = self.make_pad_button(cid, ["padkey"])
             grid.attach(btn, i % 3, i // 3, 1, 1)
         frame.append(grid)
-        wheel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)
-        wheel.append(Gtk.Label(label="Wheel", css_classes=["caption-heading", "dim-label"]))
+        wheel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.CENTER)
         for cid, glyph in WHEEL_IDS:
-            wheel.append(self.make_pad_button(cid, ["knob", "card"], glyph))
+            wheel.append(self.make_pad_button(cid, ["knob"], glyph))
         frame.append(wheel)
         left.append(frame)
 
@@ -185,15 +225,19 @@ class Window(Adw.ApplicationWindow):
 
     def make_pad_button(self, cid, classes, glyph=None):
         btn = Gtk.Button(css_classes=classes)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
+        btn.set_size_request(*((64, 64) if glyph else (124, 100)))  # CSS min-size loses to a user gtk.css
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, valign=Gtk.Align.CENTER)
         if glyph:
             box.append(Gtk.Label(label=glyph, css_classes=["title-3"]))
+            action = Gtk.Label(css_classes=["caption"], ellipsize=3, max_width_chars=7)
         else:
-            box.append(Gtk.Label(css_classes=["keyname"]))
-            box.append(Gtk.Image(pixel_size=20))
-        action = Gtk.Label(css_classes=["action"], wrap=True, justify=Gtk.Justification.CENTER,
-                           max_width_chars=14, ellipsize=3 if glyph else 0, lines=2)
+            box.append(Gtk.Label(css_classes=["caption", "dim-label"]))
+            box.append(Gtk.Image(pixel_size=20, margin_top=2))
+            action = Gtk.Label(css_classes=["heading"], wrap=True, justify=Gtk.Justification.CENTER,
+                               max_width_chars=12, lines=2, ellipsize=3)
         box.append(action)
+        # Inheritance is said in words, not only by dimming.
+        box.append(Gtk.Label(label="from Base", css_classes=["caption", "from-base"], visible=False))
         btn.set_child(box)
         btn.connect("clicked", lambda *_: self.select(cid))
         self.pad_buttons[cid] = btn
@@ -244,12 +288,14 @@ class Window(Adw.ApplicationWindow):
             action = C.resolve(self.cfg, cid, self.layer_idx)
             box = btn.get_child()
             labels = [w for w in iter_children(box) if isinstance(w, Gtk.Label)]
-            act_label = labels[-1]
-            act_label.set_label(self.summarize(action))
-            if inherited:
-                act_label.add_css_class("inherited")
-            else:
-                act_label.remove_css_class("inherited")
+            act_label, from_base = labels[-2], labels[-1]
+            text = self.summarize(action)
+            if cid not in KEY_IDS and action.get("type") in ("passthrough", "none"):
+                text = ""  # the wheel's default needs no caption; the tooltip still says it
+            act_label.set_label(text)
+            act_label.set_visible(bool(text))
+            from_base.set_label(f"from {self.cfg['layers'][0]['name']}")
+            from_base.set_visible(inherited and action.get("type") != "none" and cid in KEY_IDS)
             if cid in KEY_IDS:
                 labels[0].set_label(self.control(cid)["label"])
                 img = next(w for w in iter_children(box) if isinstance(w, Gtk.Image))
@@ -282,13 +328,17 @@ class Window(Adw.ApplicationWindow):
             sub = f"Pad connected · active layer: {active}"
         self.title.set_subtitle(sub)
         self.banner.set_revealed(not daemon)
-        self.activate_btn.set_sensitive(daemon and self.layer_idx != self.active_layer)
-        self.activate_btn.set_label("This is the active layer" if self.layer_idx == self.active_layer
-                                    else "Make this the active layer")
+        if not daemon:
+            self.active_stack.set_visible_child_name("offline")
+        else:
+            self.active_stack.set_visible_child_name(
+                "active" if self.layer_idx == self.active_layer else "inactive")
 
     def select(self, cid):
         self.selected = cid
         self.open_step = None
+        if self.split.get_collapsed():
+            self.split.set_show_sidebar(False)
         self.refresh_pad()
         self.build_editor()
 
@@ -368,38 +418,40 @@ class Window(Adw.ApplicationWindow):
         self.loading = True
         ctl = self.control(self.selected)
         page = Adw.PreferencesPage()
-
-        g = Adw.PreferencesGroup(title=ctl["label"],
-                                 description=f"Editing on layer “{self.cfg['layers'][self.layer_idx]['name']}”")
-        label_row = Adw.EntryRow(title="Key label", text=ctl["label"])
-        label_row.connect("changed", self.on_label_changed)
-        g.add(label_row)
-        sig_row = Adw.ActionRow(title=f"Pad signal: {keys.pretty_combo(ctl['signature'])}",
-                                subtitle="How the app recognises this key. It is intercepted, "
-                                         "so only the action below runs", subtitle_selectable=True)
-        learn = Gtk.Button(label="Re-detect", valign=Gtk.Align.CENTER)
-        learn.set_tooltip_text("Press this, then press the physical key on the pad")
-        learn.connect("clicked", self.on_learn)
-        sig_row.add_suffix(learn)
-        g.add(sig_row)
-        page.add(g)
-
         action = self.binding() or {"type": "inherit" if self.layer_idx else "none"}
+        cur = action.get("type", "none")
+        shown = C.resolve(self.cfg, self.selected, self.layer_idx)
+
+        # Header: which key, on which layer.
+        hero = Gtk.Box(spacing=16)
+        tile = Gtk.Image(icon_name=TYPE_ICONS.get(shown.get("type"), "input-keyboard-symbolic"),
+                         pixel_size=28, css_classes=["hero-icon"], valign=Gtk.Align.CENTER)
+        hero.append(tile)
+        words = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, valign=Gtk.Align.CENTER)
+        words.append(Gtk.Label(label=ctl["label"], xalign=0, css_classes=["title-1"],
+                               ellipsize=3))
+        words.append(Gtk.Label(label=f"On layer “{self.cfg['layers'][self.layer_idx]['name']}”",
+                               xalign=0, css_classes=["dim-label"]))
+        hero.append(words)
+        hg = Adw.PreferencesGroup()
+        hg.add(hero)
+        page.add(hg)
+
         types = [t for t in C.ACTION_TYPES if t != "inherit" or self.layer_idx != 0]
         self.types = types
-        ag = Adw.PreferencesGroup(title="Action")
-        test = Gtk.Button(label="Test", css_classes=["flat"], valign=Gtk.Align.CENTER)
-        test.set_tooltip_text("Run this action now (as if the key was pressed)")
+        ag = Adw.PreferencesGroup(title="When pressed")
+        test = Gtk.Button(child=Adw.ButtonContent(icon_name="media-playback-start-symbolic", label="Test"),
+                          css_classes=["flat"], valign=Gtk.Align.CENTER,
+                          tooltip_text="Run this action now, as if the key was pressed")
         test.connect("clicked", self.on_test)
         ag.set_header_suffix(test)
-        type_row = Adw.ComboRow(title="When pressed",
+        type_row = Adw.ComboRow(title="Action",
                                 model=Gtk.StringList.new([C.ACTION_TYPES[t] for t in types]))
-        cur = action.get("type", "none")
         type_row.set_selected(types.index(cur) if cur in types else 0)
         type_row.connect("notify::selected", self.on_type_changed)
         ag.add(type_row)
         if cur not in ("none", "inherit"):
-            name_row = Adw.EntryRow(title="Display name (optional)", text=action.get("name", ""))
+            name_row = Adw.EntryRow(title="Short name for this action (optional)", text=action.get("name", ""))
             name_row.connect("changed", lambda r: self.update_field("name", r.get_text()))
             ag.add(name_row)
         page.add(ag)
@@ -410,18 +462,30 @@ class Window(Adw.ApplicationWindow):
             vg = self.build_value_group(cur, action, self.update_field)
             if vg:
                 page.add(vg)
+        if cur in C.STEP_TYPES:
+            more = Adw.PreferencesGroup(
+                description="Turns this into a chain: what is set above runs first, then the new step.")
+            row = Adw.ButtonRow(title="Add another step", start_icon_name="list-add-symbolic")
+            row.connect("activated", lambda r: self.pick_step_type(r, self.add_step))
+            more.add(row)
+            page.add(more)
         if cur == "inherit":
             base = C.resolve(self.cfg, self.selected, 0)
             ig = Adw.PreferencesGroup()
-            ig.add(Adw.ActionRow(title="Base layer action",
+            ig.add(Adw.ActionRow(title=f"Uses the “{self.cfg['layers'][0]['name']}” layer's action",
                                  subtitle=f"{C.ACTION_TYPES[base.get('type', 'none')]}: {self.summarize(base)}"))
             page.add(ig)
 
-        page.add(self.build_board_group(ctl, action))
+        kg = Adw.PreferencesGroup(title="Key")
+        label_row = Adw.EntryRow(title="Key name", text=ctl["label"])
+        label_row.connect("changed", self.on_label_changed)
+        kg.add(label_row)
+        kg.add(self.build_hardware_row(ctl, action))
+        page.add(kg)
         self.editor_scroller.set_child(page)
         self.loading = False
 
-    # ---------- on-board keymap ----------
+    # ---------- pad hardware: signal + on-board keymap ----------
     def board_index(self, ctl, keymap):
         for idx, entry in keymap.items():
             if board.decode(entry)[1] == ctl["signature"]:
@@ -431,50 +495,60 @@ class Window(Adw.ApplicationWindow):
                 return idx
         return ctl.get("board_index")
 
-    def build_board_group(self, ctl, action):
-        g = Adw.PreferencesGroup(
-            title="Stored on the pad",
-            description="What the pad itself sends for this key, kept in its own memory. A shortcut "
-                        "stored here works on any computer, even without this app.")
+    def build_hardware_row(self, ctl, action):
+        """Signal detection and the pad's own memory, folded away: rarely needed."""
+        exp = Adw.ExpanderRow(title="Pad hardware",
+                              subtitle=f"Sends {keys.pretty_combo(ctl['signature'])}",
+                              expanded=self.hardware_open)
+        exp.add_prefix(Gtk.Image(icon_name="input-keyboard-symbolic"))
+        exp.connect("notify::expanded", lambda r, _: setattr(self, "hardware_open", r.get_expanded()))
+        sig_row = Adw.ActionRow(title=f"Signal: {keys.pretty_combo(ctl['signature'])}",
+                                subtitle="How the app recognises this key. It is intercepted, "
+                                         "so only the action above runs", subtitle_selectable=True)
+        learn = Gtk.Button(label="Re-detect", valign=Gtk.Align.CENTER, css_classes=["flat"],
+                           tooltip_text="Press this, then press the physical key on the pad")
+        learn.connect("clicked", self.on_learn)
+        sig_row.add_suffix(learn)
+        exp.add_row(sig_row)
+        self.store_row = None
         try:
             with board.Board() as b:
                 keymap, factory = b.keymap(), b.factory()
         except (board.BoardError, OSError) as ex:
-            g.add(Adw.ActionRow(title="Pad memory not reachable", subtitle=str(ex)))
-            return g
+            exp.add_row(Adw.ActionRow(title="Pad memory not reachable", subtitle=str(ex)))
+            return exp
         idx = self.board_index(ctl, keymap)
         if idx is None:
-            g.add(Adw.ActionRow(title="Couldn't match this key to the pad's memory",
-                                subtitle="Use “Identify keys” first"))
-            return g
+            exp.add_row(Adw.ActionRow(title="Couldn't match this key to the pad's memory",
+                                      subtitle="Use “Identify keys” first"))
+            return exp
         combo, _sig = board.decode(keymap[idx])
         shown = keys.pretty_combo(combo) if _sig else combo
         if keymap[idx] != factory[idx]:
             fcombo, fsig = board.decode(factory[idx])
             shown += f"  (changed; factory default is {keys.pretty_combo(fcombo) if fsig else fcombo})"
-        row = Adw.ActionRow(title="Pad sends", subtitle=shown)
+        row = Adw.ActionRow(title="Stored in the pad's memory", subtitle=shown)
         restore = Gtk.Button(label="Factory default", valign=Gtk.Align.CENTER, css_classes=["flat"],
                              tooltip_text="Put this key back to what it sent out of the box")
         restore.connect("clicked", lambda *_: self.confirm_board_write(ctl, idx, None))
         row.add_suffix(restore)
-        g.add(row)
-        self.store_row = None
+        exp.add_row(row)
         if action.get("type") == "shortcut":
+            exp.set_subtitle(exp.get_subtitle() + " · this shortcut can be stored on the pad")
             self.store_row = Adw.ActionRow()
             self.store_btn = Gtk.Button(label="Store on pad", valign=Gtk.Align.CENTER,
                                         css_classes=["suggested-action"])
             self.store_btn.connect("clicked", lambda *_: self.confirm_board_write(
                 ctl, idx, (self.binding() or {}).get("value", "")))
             self.store_row.add_suffix(self.store_btn)
-            g.add(self.store_row)
+            exp.add_row(self.store_row)
             self.update_store_row()
-        elif action.get("type") == "passthrough":
-            g.add(Adw.ActionRow(title="This key uses what the pad sends (shown above)"))
-        else:
-            g.add(Adw.ActionRow(title="Only keyboard shortcuts and media keys can be stored on the pad",
-                                subtitle="Commands, apps, text and layers need the background service",
-                                css_classes=["dim-label"]))
-        return g
+        elif action.get("type") != "passthrough":
+            exp.add_row(Adw.ActionRow(
+                title="A shortcut stored on the pad works on any computer, without this app",
+                subtitle="Only keyboard shortcuts and media keys can be stored. "
+                         "Commands, apps, text and layers need the background service"))
+        return exp
 
     def update_store_row(self):
         if not self.store_row:
@@ -753,7 +827,7 @@ class Window(Adw.ApplicationWindow):
         old = self.binding() or {}
         if t == old.get("type"):
             return
-        new = self.new_action(t)
+        new = self.as_chain(old) if t == "sequence" else self.new_action(t)
         if old.get("name") and t not in ("none", "inherit"):
             new["name"] = old["name"]
         if t == "inherit":
@@ -862,50 +936,63 @@ class Window(Adw.ApplicationWindow):
         fd.select_folder(self, None, done)
 
     # ---------- chain of steps ----------
+    def pick_step_type(self, anchor, callback):
+        """Popover listing step types under anchor; callback(t) runs once it has closed."""
+        menu = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        pop = Gtk.Popover(child=menu)
+        chosen = []
+        for t, label in C.STEP_TYPES.items():
+            b = Gtk.Button(css_classes=["flat"])
+            inner = Gtk.Box(spacing=10)
+            inner.append(Gtk.Image(icon_name=TYPE_ICONS[t]))
+            inner.append(Gtk.Label(label=label))
+            b.set_child(inner)
+            b.connect("clicked", lambda _b, t=t: (chosen.append(t), pop.popdown()))
+            menu.append(b)
+
+        def closed(*_):
+            # Unparent before the callback rebuilds the editor (and destroys the anchor).
+            pop.unparent()
+            if chosen:
+                callback(chosen[0])
+        pop.connect("closed", lambda *_: GLib.idle_add(closed))
+        pop.set_parent(anchor)
+        pop.popup()
+
     def build_steps_group(self, action):
         steps = action.setdefault("steps", [])
         g = Adw.PreferencesGroup(
             title="Steps",
             description="Run from top to bottom. Put a Wait after opening something "
                         "if the next step types into it.")
-        add = Gtk.MenuButton(label="Add step", valign=Gtk.Align.CENTER, css_classes=["flat"])
-        menu = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        pop = Gtk.Popover(child=menu)
-        for t, label in C.STEP_TYPES.items():
-            b = Gtk.Button(css_classes=["flat"])
-            inner = Gtk.Box(spacing=8)
-            inner.append(Gtk.Image(icon_name=TYPE_ICONS[t]))
-            inner.append(Gtk.Label(label=label))
-            b.set_child(inner)
-            b.connect("clicked", lambda _b, t=t: (pop.popdown(), self.add_step(t)))
-            menu.append(b)
-        add.set_popover(pop)
-        g.set_header_suffix(add)
-        if not steps:
-            g.add(Adw.ActionRow(title="No steps yet", subtitle="Use “Add step” to build the chain",
-                                css_classes=["dim-label"]))
         for i, step in enumerate(steps):
             g.add(self.build_step_row(steps, i))
+        add = Adw.ButtonRow(title="Add step" if steps else "Add the first step",
+                            start_icon_name="list-add-symbolic")
+        add.connect("activated", lambda r: self.pick_step_type(r, self.add_step))
+        g.add(add)
         return g
 
     def build_step_row(self, steps, i):
         step = steps[i]
         t = step.get("type", "none")
-        exp = Adw.ExpanderRow(title=f"{i + 1}. {C.STEP_TYPES.get(t, t)}", subtitle=self.summarize(step),
+        exp = Adw.ExpanderRow(title=C.STEP_TYPES.get(t, t), subtitle=self.summarize(step),
                               expanded=i == self.open_step)
-        exp.add_prefix(Gtk.Image(icon_name=TYPE_ICONS.get(t, "input-keyboard-symbolic")))
+        exp.add_prefix(Gtk.Label(label=str(i + 1), css_classes=["stepnum"], valign=Gtk.Align.CENTER))
         exp.connect("notify::expanded", lambda r, _: setattr(
             self, "open_step", i if r.get_expanded() else (None if self.open_step == i else self.open_step)))
-        for icon, tip, delta, ok in [("go-up-symbolic", "Move up", -1, i > 0),
-                                     ("go-down-symbolic", "Move down", 1, i < len(steps) - 1)]:
-            b = Gtk.Button(icon_name=icon, tooltip_text=tip, valign=Gtk.Align.CENTER,
-                           css_classes=["flat"], sensitive=ok)
+        # Reorder/remove live inside the opened step, so closed rows stay a clean list.
+        tools = Gtk.Box(spacing=6, margin_top=10, halign=Gtk.Align.END)
+        for icon, label, delta, ok in [("go-up-symbolic", "Move up", -1, i > 0),
+                                       ("go-down-symbolic", "Move down", 1, i < len(steps) - 1)]:
+            b = Gtk.Button(child=Adw.ButtonContent(icon_name=icon, label=label),
+                           css_classes=["flat", "small"], sensitive=ok)
             b.connect("clicked", lambda *_, d=delta: self.move_step(i, d))
-            exp.add_suffix(b)
-        rm = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Remove step",
-                        valign=Gtk.Align.CENTER, css_classes=["flat"])
+            tools.append(b)
+        rm = Gtk.Button(child=Adw.ButtonContent(icon_name="user-trash-symbolic", label="Remove"),
+                        css_classes=["flat", "small", "destructive-action"])
         rm.connect("clicked", lambda *_: self.remove_step(i))
-        exp.add_suffix(rm)
+        tools.append(rm)
 
         def set_field(field, value):
             if self.loading:
@@ -919,13 +1006,30 @@ class Window(Adw.ApplicationWindow):
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_top=8, margin_bottom=12,
                           margin_start=12, margin_end=12)
             box.append(vg)
-            exp.add_row(box)
+        else:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_bottom=8, margin_end=12)
+        box.append(tools)
+        exp.add_row(box)
         return exp
+
+    def as_chain(self, action):
+        """action as a chain of steps; a single action becomes its first step (keeping its setup)."""
+        action = action or {}
+        if action.get("type") == "sequence":
+            return action
+        chain = C.default_action("sequence")
+        if action.get("name"):
+            chain["name"] = action["name"]
+        if action.get("type") in C.STEP_TYPES:
+            chain["steps"].append({k: v for k, v in action.items() if k != "name"})
+        return chain
 
     def steps(self):
         return self.binding().setdefault("steps", [])
 
     def add_step(self, t):
+        if (self.binding() or {}).get("type") != "sequence":
+            self.cfg["layers"][self.layer_idx]["bindings"][self.selected] = self.as_chain(self.binding())
         self.steps().append(self.new_action(t))
         self.open_step = len(self.steps()) - 1
         self.refresh_pad()
