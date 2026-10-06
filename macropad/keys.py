@@ -73,6 +73,12 @@ def parse_sequence(text):
     return steps
 
 
+def _pretty_name(n):
+    if n.startswith("KP") and n[2:].isdigit():
+        return f"Num {n[2:]}"
+    return _PRETTY.get(n, n.title() if len(n) > 1 else n)
+
+
 def pretty_combo(text):
     out = []
     for tok in text.split():
@@ -84,7 +90,7 @@ def pretty_combo(text):
         except ValueError:
             out.append(tok)
             continue
-        out.append("+".join(_PRETTY.get(n, n.title() if len(n) > 1 else n) for n in names))
+        out.append("+".join(_pretty_name(n) for n in names))
     return " ".join(out)
 
 

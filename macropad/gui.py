@@ -30,7 +30,8 @@ TYPE_ICONS = {
     "inherit": "go-up-symbolic", "shortcut": "input-keyboard-symbolic",
     "text": "insert-text-symbolic", "command": "utilities-terminal-symbolic",
     "app": "application-x-executable-symbolic", "open": "web-browser-symbolic",
-    "layer": "view-paged-symbolic",
+    "terminal": "utilities-terminal-symbolic", "layer": "view-paged-symbolic",
+    "sequence": "view-list-ordered-symbolic", "wait": "preferences-system-time-symbolic",
 }
 CSS = """
 .padkey { min-width: 130px; min-height: 100px; border-radius: 14px; padding: 8px; }
@@ -109,6 +110,7 @@ class Window(Adw.ApplicationWindow):
         self.app_names = {i: n for n, i in self.apps}
         self.pad_buttons = {}
         self.store_row = None
+        self.open_step = None  # index of the expanded step in a chain editor
 
         self.toasts = Adw.ToastOverlay()
         toolbar = Adw.ToolbarView()
@@ -214,6 +216,15 @@ class Window(Adw.ApplicationWindow):
             return self.app_names.get(v, v) or "—"
         if t == "open":
             return os.path.basename(v.rstrip("/")) or v or "—"
+        if t == "terminal":
+            cmd = action.get("command", "").strip()
+            where = action.get("dir") or "~"
+            return f"{cmd[:16]} in {os.path.basename(where.rstrip('/')) or where}" if cmd else f"Terminal in {where}"
+        if t == "wait":
+            return f"Wait {v} ms"
+        if t == "sequence":
+            n = len(action.get("steps", []))
+            return f"{n} step{'s' if n != 1 else ''}"
         if t == "layer":
             if v in ("next", "prev"):
                 return f"{v.title()} layer"
@@ -277,6 +288,7 @@ class Window(Adw.ApplicationWindow):
 
     def select(self, cid):
         self.selected = cid
+        self.open_step = None
         self.refresh_pad()
         self.build_editor()
 
@@ -362,8 +374,9 @@ class Window(Adw.ApplicationWindow):
         label_row = Adw.EntryRow(title="Key label", text=ctl["label"])
         label_row.connect("changed", self.on_label_changed)
         g.add(label_row)
-        sig_row = Adw.ActionRow(title="Pad signal", subtitle=keys.pretty_combo(ctl["signature"]) +
-                                f"  ({ctl['signature']})", subtitle_selectable=True)
+        sig_row = Adw.ActionRow(title=f"Pad signal: {keys.pretty_combo(ctl['signature'])}",
+                                subtitle="How the app recognises this key. It is intercepted, "
+                                         "so only the action below runs", subtitle_selectable=True)
         learn = Gtk.Button(label="Re-detect", valign=Gtk.Align.CENTER)
         learn.set_tooltip_text("Press this, then press the physical key on the pad")
         learn.connect("clicked", self.on_learn)
@@ -391,9 +404,12 @@ class Window(Adw.ApplicationWindow):
             ag.add(name_row)
         page.add(ag)
 
-        vg = self.build_value_group(cur, action)
-        if vg:
-            page.add(vg)
+        if cur == "sequence":
+            page.add(self.build_steps_group(action))
+        else:
+            vg = self.build_value_group(cur, action, self.update_field)
+            if vg:
+                page.add(vg)
         if cur == "inherit":
             base = C.resolve(self.cfg, self.selected, 0)
             ig = Adw.PreferencesGroup()
@@ -422,7 +438,7 @@ class Window(Adw.ApplicationWindow):
                         "stored here works on any computer, even without this app.")
         try:
             with board.Board() as b:
-                keymap = b.keymap()
+                keymap, factory = b.keymap(), b.factory()
         except (board.BoardError, OSError) as ex:
             g.add(Adw.ActionRow(title="Pad memory not reachable", subtitle=str(ex)))
             return g
@@ -432,7 +448,11 @@ class Window(Adw.ApplicationWindow):
                                 subtitle="Use “Identify keys” first"))
             return g
         combo, _sig = board.decode(keymap[idx])
-        row = Adw.ActionRow(title="Pad sends", subtitle=keys.pretty_combo(combo) if _sig else combo)
+        shown = keys.pretty_combo(combo) if _sig else combo
+        if keymap[idx] != factory[idx]:
+            fcombo, fsig = board.decode(factory[idx])
+            shown += f"  (changed; factory default is {keys.pretty_combo(fcombo) if fsig else fcombo})"
+        row = Adw.ActionRow(title="Pad sends", subtitle=shown)
         restore = Gtk.Button(label="Factory default", valign=Gtk.Align.CENTER, css_classes=["flat"],
                              tooltip_text="Put this key back to what it sent out of the box")
         restore.connect("clicked", lambda *_: self.confirm_board_write(ctl, idx, None))
@@ -618,12 +638,13 @@ class Window(Adw.ApplicationWindow):
         listen()
         dlg.present(self)
 
-    def build_value_group(self, t, action):
+    def build_value_group(self, t, action, set_field):
+        """Editor widgets for one action (or sequence step); edits go through set_field(field, value)."""
         v = action.get("value", "")
         g = Adw.PreferencesGroup()
         if t == "shortcut":
             row = Adw.EntryRow(title="Keys", text=v)
-            row.connect("changed", lambda r: self.update_field("value", r.get_text()))
+            row.connect("changed", lambda r: set_field("value", r.get_text()))
             rec = Gtk.Button(icon_name="media-record-symbolic", valign=Gtk.Align.CENTER,
                              tooltip_text="Record a shortcut from your keyboard", css_classes=["flat"])
             rec.connect("clicked", lambda *_: self.record_shortcut(row))
@@ -638,12 +659,12 @@ class Window(Adw.ApplicationWindow):
             tv = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, top_margin=10, bottom_margin=10,
                               left_margin=10, right_margin=10, css_classes=["card"], height_request=120)
             tv.get_buffer().set_text(v)
-            tv.get_buffer().connect("changed", lambda b: self.update_field(
+            tv.get_buffer().connect("changed", lambda b: set_field(
                 "value", b.get_text(b.get_start_iter(), b.get_end_iter(), False)))
             g.add(tv)
         elif t == "command":
             row = Adw.EntryRow(title="Shell command", text=v)
-            row.connect("changed", lambda r: self.update_field("value", r.get_text()))
+            row.connect("changed", lambda r: set_field("value", r.get_text()))
             g.add(row)
             g.set_description("Runs via sh -c in your home directory, e.g. "
                               "“nautilus ~/Downloads” or “playerctl next”")
@@ -656,12 +677,12 @@ class Window(Adw.ApplicationWindow):
                 row.set_selected(ids.index(v))
             elif ids:
                 row.set_selected(Gtk.INVALID_LIST_POSITION)
-            row.connect("notify::selected", lambda r, _: self.update_field(
+            row.connect("notify::selected", lambda r, _: set_field(
                 "value", ids[r.get_selected()]) if r.get_selected() < len(ids) else None)
             g.add(row)
         elif t == "open":
             row = Adw.EntryRow(title="URL, file or folder", text=v)
-            row.connect("changed", lambda r: self.update_field("value", r.get_text()))
+            row.connect("changed", lambda r: set_field("value", r.get_text()))
             browse = Gtk.Button(icon_name="document-open-symbolic", valign=Gtk.Align.CENTER,
                                 css_classes=["flat"], tooltip_text="Choose a file")
             browse.connect("clicked", lambda *_: self.pick_file(row))
@@ -674,10 +695,35 @@ class Window(Adw.ApplicationWindow):
             vals = [o[0] for o in opts]
             row.set_selected(vals.index(str(v)) if str(v) in vals else 0)
             if str(v) not in vals:  # e.g. the target layer was deleted
-                self.binding()["value"] = "next"
+                action["value"] = "next"
                 self.schedule_save()
-            row.connect("notify::selected", lambda r, _: self.update_field("value", vals[r.get_selected()]))
+            row.connect("notify::selected", lambda r, _: set_field("value", vals[r.get_selected()]))
             g.add(row)
+        elif t == "terminal":
+            row = Adw.EntryRow(title="Folder", text=action.get("dir", "~"))
+            row.connect("changed", lambda r: set_field("dir", r.get_text()))
+            browse = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER,
+                                css_classes=["flat"], tooltip_text="Choose a folder")
+            browse.connect("clicked", lambda *_: self.pick_folder(row))
+            row.add_suffix(browse)
+            g.add(row)
+            cmd = Adw.EntryRow(title="Command to run there (optional)", text=action.get("command", ""))
+            cmd.connect("changed", lambda r: set_field("command", r.get_text()))
+            g.add(cmd)
+            keep = Adw.SwitchRow(title="Keep the terminal open afterwards",
+                                 subtitle="Leaves you at a shell prompt when the command exits",
+                                 active=action.get("keep_open", True))
+            keep.connect("notify::active", lambda r, _: set_field("keep_open", r.get_active()))
+            g.add(keep)
+            g.set_description("Opens a new terminal window in the folder and runs the command, "
+                              "e.g. folder “~/Coding/macropad”, command “claude”.")
+        elif t == "wait":
+            row = Adw.SpinRow.new_with_range(0, 60000, 100)
+            row.set_title("Milliseconds")
+            row.set_value(int(v or 0))
+            row.connect("notify::value", lambda r, _: set_field("value", int(r.get_value())))
+            g.add(row)
+            g.set_description("Gives a window time to open before the next step, e.g. 800 ms.")
         else:
             return None
         return g
@@ -705,15 +751,9 @@ class Window(Adw.ApplicationWindow):
             return
         t = self.types[row.get_selected()]
         old = self.binding() or {}
-        new = {"type": t}
         if t == old.get("type"):
             return
-        if t == "layer":
-            new["value"] = "next"
-        elif t == "app" and self.apps:
-            new["value"] = self.apps[0][1]
-        elif t not in ("none", "inherit", "passthrough"):
-            new["value"] = ""
+        new = self.new_action(t)
         if old.get("name") and t not in ("none", "inherit"):
             new["name"] = old["name"]
         if t == "inherit":
@@ -724,15 +764,23 @@ class Window(Adw.ApplicationWindow):
             self.set_binding(new)
         GLib.idle_add(self.build_editor)
 
+    def new_action(self, t):
+        new = C.default_action(t)
+        if t == "app" and self.apps:
+            new["value"] = self.apps[0][1]
+        return new
+
     def on_test(self, *_):
         action = C.resolve(self.cfg, self.selected, self.layer_idx)
+        first = next((st for st in action.get("steps", []) if st.get("type") != "wait"), {})
 
         def run():
             ipc_async({"cmd": "run", "control": self.selected, "action": action},
                       lambda r: self.toast("Service not running") if r is None else None)
             return False
         # Short delay so shortcut/text actions land in the window you switch to, not here.
-        if action.get("type") in ("shortcut", "text", "passthrough"):
+        if action.get("type") in ("shortcut", "text", "passthrough") or \
+                first.get("type") in ("shortcut", "text"):
             self.toast("Running in 2 seconds — focus the target window")
             GLib.timeout_add(2000, run)
         else:
@@ -796,6 +844,107 @@ class Window(Adw.ApplicationWindow):
                 return
             row.set_text(f.get_path())
         fd.open(self, None, done)
+
+    def pick_folder(self, row):
+        fd = Gtk.FileDialog(title="Choose a folder")
+        start = os.path.expanduser(row.get_text().strip() or "~")
+        if os.path.isdir(start):
+            fd.set_initial_folder(Gio.File.new_for_path(start))
+
+        def done(d, res):
+            try:
+                f = d.select_folder_finish(res)
+            except GLib.Error:
+                return
+            path = f.get_path()
+            home = os.path.expanduser("~")
+            row.set_text("~" + path[len(home):] if path == home or path.startswith(home + "/") else path)
+        fd.select_folder(self, None, done)
+
+    # ---------- chain of steps ----------
+    def build_steps_group(self, action):
+        steps = action.setdefault("steps", [])
+        g = Adw.PreferencesGroup(
+            title="Steps",
+            description="Run from top to bottom. Put a Wait after opening something "
+                        "if the next step types into it.")
+        add = Gtk.MenuButton(label="Add step", valign=Gtk.Align.CENTER, css_classes=["flat"])
+        menu = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        pop = Gtk.Popover(child=menu)
+        for t, label in C.STEP_TYPES.items():
+            b = Gtk.Button(css_classes=["flat"])
+            inner = Gtk.Box(spacing=8)
+            inner.append(Gtk.Image(icon_name=TYPE_ICONS[t]))
+            inner.append(Gtk.Label(label=label))
+            b.set_child(inner)
+            b.connect("clicked", lambda _b, t=t: (pop.popdown(), self.add_step(t)))
+            menu.append(b)
+        add.set_popover(pop)
+        g.set_header_suffix(add)
+        if not steps:
+            g.add(Adw.ActionRow(title="No steps yet", subtitle="Use “Add step” to build the chain",
+                                css_classes=["dim-label"]))
+        for i, step in enumerate(steps):
+            g.add(self.build_step_row(steps, i))
+        return g
+
+    def build_step_row(self, steps, i):
+        step = steps[i]
+        t = step.get("type", "none")
+        exp = Adw.ExpanderRow(title=f"{i + 1}. {C.STEP_TYPES.get(t, t)}", subtitle=self.summarize(step),
+                              expanded=i == self.open_step)
+        exp.add_prefix(Gtk.Image(icon_name=TYPE_ICONS.get(t, "input-keyboard-symbolic")))
+        exp.connect("notify::expanded", lambda r, _: setattr(
+            self, "open_step", i if r.get_expanded() else (None if self.open_step == i else self.open_step)))
+        for icon, tip, delta, ok in [("go-up-symbolic", "Move up", -1, i > 0),
+                                     ("go-down-symbolic", "Move down", 1, i < len(steps) - 1)]:
+            b = Gtk.Button(icon_name=icon, tooltip_text=tip, valign=Gtk.Align.CENTER,
+                           css_classes=["flat"], sensitive=ok)
+            b.connect("clicked", lambda *_, d=delta: self.move_step(i, d))
+            exp.add_suffix(b)
+        rm = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Remove step",
+                        valign=Gtk.Align.CENTER, css_classes=["flat"])
+        rm.connect("clicked", lambda *_: self.remove_step(i))
+        exp.add_suffix(rm)
+
+        def set_field(field, value):
+            if self.loading:
+                return
+            step[field] = value
+            exp.set_subtitle(self.summarize(step))
+            self.refresh_pad()
+            self.schedule_save()
+        vg = self.build_value_group(t, step, set_field)
+        if vg:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_top=8, margin_bottom=12,
+                          margin_start=12, margin_end=12)
+            box.append(vg)
+            exp.add_row(box)
+        return exp
+
+    def steps(self):
+        return self.binding().setdefault("steps", [])
+
+    def add_step(self, t):
+        self.steps().append(self.new_action(t))
+        self.open_step = len(self.steps()) - 1
+        self.refresh_pad()
+        self.schedule_save()
+        self.build_editor()
+
+    def move_step(self, i, delta):
+        steps = self.steps()
+        steps[i], steps[i + delta] = steps[i + delta], steps[i]
+        self.open_step = i + delta if self.open_step == i else None
+        self.schedule_save()
+        self.build_editor()
+
+    def remove_step(self, i):
+        del self.steps()[i]
+        self.open_step = None
+        self.refresh_pad()
+        self.schedule_save()
+        self.build_editor()
 
     # ---------- persistence / daemon ----------
     def schedule_save(self):

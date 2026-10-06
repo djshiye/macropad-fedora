@@ -13,6 +13,8 @@ the action you assigned instead. The **Macropad** app (in the app grid) edits th
 | Run command | `nautilus ~/Downloads`, `playerctl next` (run with `sh -c`) |
 | Launch app | picked from installed apps |
 | Open URL / file | `https://…`, `~/Documents/notes.md` |
+| Open terminal | new Ptyxis window in a folder, optionally running a command (e.g. `~/Coding/macropad` + `claude`) |
+| Chain of steps | several of the above in order, with **Wait** steps in between (Add step / ↑ ↓ / remove) |
 | Switch layer | next / previous / a specific layer |
 | Original key | send what the pad sends natively (wheel = volume) |
 
@@ -47,4 +49,7 @@ factory table. Protocol: https://github.com/parsaj-dev/sdcx-keypad (docs/PROTOCO
 `./install.sh` (asks for admin password once for the udev rule; enables the user service and app launcher).
 
 ## Notes
+- Terminal commands run in an interactive shell (`$SHELL -ic`) so `~/.bashrc` PATH entries apply.
+  The terminal binary is the `terminal` key in config.json (default `ptyxis`, which takes `--new-window -d DIR -- CMD`).
+- In a chain, typing steps go to whatever window has focus; add a Wait after opening a window before typing into it.
 - Output is serialized: a long `sleep:` in one sequence delays other keys until it finishes.

@@ -160,26 +160,53 @@ class Daemon:
 
     # ---------- actions ----------
     def run(self, action, control):
-        t, v = action.get("type", "none"), action.get("value", "")
+        asyncio.create_task(self.execute(action, control))
+
+    async def execute(self, action, control):
         try:
-            if t == "passthrough":
-                codes = [keys.code_of(n) for n in control["signature"].split("+")]
-                asyncio.create_task(self.play([("combo", codes)]))
-            elif t == "shortcut":
-                asyncio.create_task(self.play(keys.parse_sequence(v)))
-            elif t == "text":
-                asyncio.create_task(self.type_text(v))
-            elif t == "command":
-                _spawn(["sh", "-c", v])
-            elif t == "app":
-                _spawn(["gtk-launch", v])
-            elif t == "open":
-                _spawn(["xdg-open", os.path.expanduser(v)])
-            elif t == "layer":
-                self.switch_layer(v)
+            if action.get("type") == "sequence":
+                for step in action.get("steps", []):
+                    if step.get("type") != "sequence":  # no nesting
+                        await self.do(step, control)
+            else:
+                await self.do(action, control)
         except (ValueError, OSError) as ex:
             log.error("action %s failed: %s", action, ex)
             notify("Macropad action failed", f"{control['label']}: {ex}", "dialog-error")
+
+    async def do(self, action, control):
+        t, v = action.get("type", "none"), action.get("value", "")
+        if t == "passthrough":
+            codes = [keys.code_of(n) for n in control["signature"].split("+")]
+            await self.play([("combo", codes)])
+        elif t == "shortcut":
+            await self.play(keys.parse_sequence(v))
+        elif t == "text":
+            await self.type_text(v)
+        elif t == "wait":
+            await asyncio.sleep(int(v or 0) / 1000)
+        elif t == "command":
+            _spawn(["sh", "-c", v])
+        elif t == "app":
+            _spawn(["gtk-launch", v])
+        elif t == "open":
+            _spawn(["xdg-open", os.path.expanduser(v)])
+        elif t == "terminal":
+            self.open_terminal(action)
+        elif t == "layer":
+            self.switch_layer(v)
+
+    def open_terminal(self, action):
+        folder = os.path.expanduser(action.get("dir") or "~")
+        if not os.path.isdir(folder):
+            raise ValueError(f"folder not found: {folder}")
+        argv = [self.cfg.get("terminal") or "ptyxis", "--new-window", "-d", folder]
+        cmd = action.get("command", "").strip()
+        if cmd:
+            # Interactive shell so ~/.bashrc puts things like ~/.local/bin on PATH.
+            shell = os.environ.get("SHELL") or "/bin/bash"
+            argv += ["--", shell, "-ic", f"{cmd}; exec {shell}" if action.get("keep_open", True) else cmd]
+        _spawn(argv)
 
     def switch_layer(self, v):
         n = len(self.cfg["layers"])

@@ -8,7 +8,7 @@ CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / 
 CONFIG_PATH = CONFIG_DIR / "config.json"
 SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "macropad.sock"
 
-# Action types: none, passthrough, inherit, shortcut, text, command, app, open, layer
+# Action types: none, passthrough, inherit, shortcut, text, command, app, open, terminal, layer, sequence
 ACTION_TYPES = {
     "none": "Do nothing",
     "passthrough": "Original key",
@@ -18,6 +18,20 @@ ACTION_TYPES = {
     "command": "Run command",
     "app": "Launch app",
     "open": "Open URL / file",
+    "terminal": "Open terminal",
+    "layer": "Switch layer",
+    "sequence": "Chain of steps",
+}
+
+# What a step inside a "sequence" can be.
+STEP_TYPES = {
+    "terminal": "Open terminal",
+    "app": "Launch app",
+    "command": "Run command",
+    "open": "Open URL / file",
+    "wait": "Wait",
+    "text": "Type text",
+    "shortcut": "Press keys",
     "layer": "Switch layer",
 }
 
@@ -25,13 +39,14 @@ DEFAULT_CONFIG = {
     "version": 1,
     "device_glob": "/dev/input/by-id/usb-SDINNOVATION_SIDE-KEYBOARD_*event*",
     "notify_layer_change": True,
+    "terminal": "ptyxis",
     "controls": [
-        {"id": "k1", "label": "Key 1", "signature": "LEFTCTRL+A"},
-        {"id": "k2", "label": "Key 2", "signature": "KP5"},
-        {"id": "k3", "label": "Key 3", "signature": "KP6"},
-        {"id": "k4", "label": "Key 4", "signature": "KP1"},
-        {"id": "k5", "label": "Key 5", "signature": "KP2"},
-        {"id": "k6", "label": "Key 6", "signature": "KP3"},
+        {"id": "k1", "label": "Key 1", "signature": "KP1"},
+        {"id": "k2", "label": "Key 2", "signature": "KP2"},
+        {"id": "k3", "label": "Key 3", "signature": "KP3"},
+        {"id": "k4", "label": "Key 4", "signature": "KP4"},
+        {"id": "k5", "label": "Key 5", "signature": "KP5"},
+        {"id": "k6", "label": "Key 6", "signature": "KP6"},
         {"id": "wheel_left", "label": "Wheel ⟲", "signature": "VOLUMEDOWN"},
         {"id": "wheel_right", "label": "Wheel ⟳", "signature": "VOLUMEUP"},
         {"id": "wheel_press", "label": "Wheel press", "signature": "MUTE"},
@@ -112,3 +127,18 @@ def resolve(cfg, control_id, layer_index):
     if action is None or action.get("type") == "inherit":
         return {"type": "none"}
     return action
+
+
+def default_action(t):
+    """A fresh action/step of type t with sensible empty fields."""
+    if t == "layer":
+        return {"type": t, "value": "next"}
+    if t == "wait":
+        return {"type": t, "value": 500}
+    if t == "terminal":
+        return {"type": t, "dir": "~", "command": "", "keep_open": True}
+    if t == "sequence":
+        return {"type": t, "steps": []}
+    if t in ("none", "inherit", "passthrough"):
+        return {"type": t}
+    return {"type": t, "value": ""}
